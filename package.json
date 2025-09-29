@@ -11,7 +11,7 @@
     "next": "14.2.12",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "pitchfinder": "^3.5.0"
+    "pitchfinder": "2.0.9"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.20",
