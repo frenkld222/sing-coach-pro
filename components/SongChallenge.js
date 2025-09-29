@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import BeatBar from "@/components/BeatBar";
+import LyricsKaraoke from "@/components/LyricsKaraoke";
 import { keyToSemitones, midiToFreq, midiToNoteName } from "@/lib/pitch";
 
 export default function SongChallenge({ isListening, currentFreq, tolerance, keyName, bpm, phaseMs, songs }) {
@@ -8,42 +10,63 @@ export default function SongChallenge({ isListening, currentFreq, tolerance, key
   const [state, setState] = useState("idle"); // idle|countdown|recording|done
   const [frames, setFrames] = useState([]);   // {t,f0}
   const [result, setResult] = useState(null); // {pitchPct, timingPct, notes: [...]}
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   const transpose = keyToSemitones(keyName);
   const song = songs[songKey];
   const refSong = useMemo(() => transposeSong(song, transpose, bpm), [songKey, keyName, bpm]);
+  const totalSec = useMemo(() => refSong.notes.length ? (refSong.notes.at(-1).start + refSong.notes.at(-1).dur) : 0, [refSong]);
 
+  const rafRef = useRef(null);
   const t0Ref = useRef(null);
-  const timerRef = useRef(null);
+  const framesTimerRef = useRef(null);
 
+  // Drive an internal clock during countdown/recording
   useEffect(() => {
-    if (state !== "recording") return;
-    if (!isListening) return;
-
-    const now = performance.now();
-    if (t0Ref.current == null) t0Ref.current = now;
-
-    const id = setInterval(() => {
+    if (state === "idle" || state === "done") return;
+    const tick = () => {
+      if (t0Ref.current == null) t0Ref.current = performance.now();
       const t = (performance.now() - t0Ref.current) / 1000;
+      setElapsedSec(t);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => rafRef.current && cancelAnimationFrame(rafRef.current);
+  }, [state]);
+
+  // Collect pitch frames while recording
+  useEffect(() => {
+    if (state !== "recording" || !isListening) return;
+    const id = setInterval(() => {
+      const t = (performance.now() - (t0Ref.current ?? performance.now())) / 1000;
       setFrames(prev => prev.concat([{ t, f0: currentFreq ?? null }]));
     }, 33);
-
-    timerRef.current = id;
+    framesTimerRef.current = id;
     return () => clearInterval(id);
   }, [state, isListening, currentFreq]);
 
-  function startCountdown() {
+  function startChallenge() {
     setResult(null);
     setFrames([]);
+    setElapsedSec(0);
+    t0Ref.current = null;
     setState("countdown");
-    setTimeout(() => setState("recording"), 1000);
-    setTimeout(() => setState("done"), Math.max(1500, (refSong.durationMs + 300)) );
+
+    // 1 second countdown -> start
+    setTimeout(() => {
+      setState("recording");
+      // force a fresh t0 for stable timing
+      t0Ref.current = performance.now();
+      // end after song length + tiny pad
+      const endMs = totalSec * 1000 + 200;
+      setTimeout(() => setState("done"), Math.max(1000, endMs));
+    }, 1000);
   }
 
+  // Compute score when done
   useEffect(() => {
     if (state !== "done") return;
-    if (timerRef.current) clearInterval(timerRef.current);
-    t0Ref.current = null;
+    if (framesTimerRef.current) clearInterval(framesTimerRef.current);
 
     const notes = scoreAgainstSong(refSong, frames, tolerance);
     const pitchPct = avg(notes.map(n => n.pitchScore));
@@ -51,42 +74,51 @@ export default function SongChallenge({ isListening, currentFreq, tolerance, key
     setResult({ pitchPct, timingPct, notes });
   }, [state]);
 
+  const lyrics = useMemo(() => song.lyrics ?? [], [songKey]);
+
   return (
     <div className="grid gap-6 md:grid-cols-[1.2fr,1fr]">
-      <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-5 space-y-5">
-        <div className="label">Song</div>
-        <select className="input" value={songKey} onChange={(e)=>setSongKey(e.target.value)}>
-          {Object.keys(songs).map(k => (
-            <option key={k} value={k}>{k}</option>
-          ))}
-        </select>
+      {/* LEFT: Transport + visuals */}
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <label className="label">Song</label>
+            <select className="input" value={songKey} onChange={(e)=>setSongKey(e.target.value)}>
+              {Object.keys(songs).map(k => (<option key={k} value={k}>{k}</option>))}
+            </select>
+            <div className="text-sm text-gray-600 dark:text-gray-300 ml-auto">
+              Key: <span className="font-semibold">{keyName} Major</span> · Tempo: <span className="font-semibold">{bpm} BPM</span> · Length: <span className="font-semibold">{totalSec.toFixed(1)}s</span>
+            </div>
+          </div>
 
-        <div className="text-sm text-gray-600 dark:text-gray-300">
-          Key: <span className="font-semibold">{keyName} Major</span> · Tempo: <span className="font-semibold">{bpm} BPM</span> · Length: <span className="font-semibold">{(refSong.durationMs/1000).toFixed(1)}s</span>
-        </div>
+          <BeatBar bpm={bpm} elapsedSec={state==="done" ? totalSec : elapsedSec} totalSec={totalSec} />
+          <LyricsKaraoke lyrics={lyrics} bpm={bpm} elapsedSec={state==="done" ? totalSec : elapsedSec} />
 
-        <div className="flex items-center gap-3">
-          <button
-            className={`button ${state === "recording" || state === "countdown" ? "bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-100" : "button-primary"}`}
-            onClick={startCountdown}
-            disabled={!isListening || state === "recording" || state === "countdown"}
-            title={!isListening ? "Start the microphone first" : ""}
-          >
-            {state === "idle" && "Start Challenge"}
-            {state === "countdown" && "Get Ready…"}
-            {state === "recording" && "Recording…"}
-            {state === "done" && "Retry"}
-          </button>
-          {!isListening && <span className="text-xs text-red-600">Turn on the mic first.</span>}
-        </div>
+          <div className="flex items-center gap-3">
+            <button
+              className={`button ${state === "recording" || state === "countdown" ? "bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-100" : "button-primary"}`}
+              onClick={startChallenge}
+              disabled={!isListening || state === "recording" || state === "countdown"}
+              title={!isListening ? "Start the microphone first" : ""}
+            >
+              {state === "idle" && "Start Challenge"}
+              {state === "countdown" && "Get Ready…"}
+              {state === "recording" && "Recording…"}
+              {state === "done" && "Retry"}
+            </button>
+            {!isListening && <span className="text-xs text-red-600">Turn on the mic first.</span>}
+          </div>
 
-        <div className="text-xs text-gray-500 dark:text-gray-400">
-          3-2-1, then sing the melody. We’ll grade your pitch vs each note and your timing vs each note’s start.
+          <div className="text-xs text-gray-500 dark:text-gray-400">
+            After countdown, sing with the beat and words. We grade pitch (cents) and timing (ms) per note.
+          </div>
         </div>
       </div>
 
+      {/* RIGHT: Results */}
       <div className="rounded-2xl border border-gray-200 dark:border-gray-800 p-5 space-y-4">
         <div className="label">Results</div>
+
         {!result && (
           <div className="text-sm text-gray-600 dark:text-gray-300">
             {state === "idle" && "Choose a song and press Start Challenge."}
@@ -98,14 +130,14 @@ export default function SongChallenge({ isListening, currentFreq, tolerance, key
 
         {result && (
           <>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 grid grid-cols-2 gap-4">
+              <div>
                 <div className="label">Pitch Accuracy</div>
-                <div className="mt-1 text-3xl font-bold">{Math.round(result.pitchPct)}%</div>
+                <div className="mt-1 text-4xl font-extrabold">{Math.round(result.pitchPct)}%</div>
               </div>
-              <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+              <div>
                 <div className="label">Timing Accuracy</div>
-                <div className="mt-1 text-3xl font-bold">{Math.round(result.timingPct)}%</div>
+                <div className="mt-1 text-4xl font-extrabold">{Math.round(result.timingPct)}%</div>
               </div>
             </div>
 
@@ -120,8 +152,8 @@ export default function SongChallenge({ isListening, currentFreq, tolerance, key
                   <tr>
                     <th className="p-2 text-left">#</th>
                     <th className="p-2 text-left">Target</th>
-                    <th className="p-2 text-left">Pitch Score</th>
-                    <th className="p-2 text-left">Timing Score</th>
+                    <th className="p-2 text-left">Pitch</th>
+                    <th className="p-2 text-left">Timing</th>
                     <th className="p-2 text-left">Avg Cents</th>
                     <th className="p-2 text-left">Onset Δms</th>
                   </tr>
@@ -147,7 +179,7 @@ export default function SongChallenge({ isListening, currentFreq, tolerance, key
   );
 }
 
-// helpers
+// —— helpers ——
 
 function transposeSong(song, semitones, bpm) {
   const secPerBeat = 60 / (bpm || song.bpm);
@@ -156,7 +188,7 @@ function transposeSong(song, semitones, bpm) {
     dur: n.durBeats * secPerBeat,
     midi: n.midi + semitones
   }));
-  const durationMs = (notes.at(-1).start + notes.at(-1).dur) * 1000;
+  const durationMs = notes.length ? (notes[notes.length-1].start + notes[notes.length-1].dur) * 1000 : 0;
   return { ...song, notes, durationMs };
 }
 
@@ -215,3 +247,11 @@ function avg(arr) {
   if (!good.length) return 0;
   return good.reduce((a,b)=>a+b,0) / good.length;
 }
+
+function verdict(pitch, timing) {
+  if (pitch >= 90 && timing >= 90) return "🔥 Nailed it! Pro-level control.";
+  if (pitch >= 75 && timing >= 75) return "👍 Solid! Keep polishing transitions.";
+  if (pitch >= 60 || timing >= 60) return "🙂 Getting there. Focus on breath and entrances.";
+  return "💪 Keep practicing. Try slowing the tempo and using the Scale Game.";
+}
+
