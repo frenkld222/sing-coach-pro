@@ -22,7 +22,7 @@ import { demoSong, demoPhrases, SONGS } from "@/lib/songs";
 const DEFAULT_BPM = 90;
 const DEFAULT_TOLERANCE = 25; // cents
 const SCALE_BOTTOM_MIDI = 48; // C3
-the SCALE_TOP_MIDI = 72;    // C5
+const SCALE_TOP_MIDI = 72;    // C5
 
 const TABS = ["Live Pitch", "Scale Practice", "Phrase Trainer", "Song Challenge"];
 
